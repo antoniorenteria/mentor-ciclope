@@ -199,8 +199,26 @@ const sucursales = () => (ojo && ojo.sucursales ? ojo.sucursales.filter(s => s.a
 const nomSuc = id => { const s = (ojo && ojo.sucursales || []).find(x => x.id === id); return s ? s.nombre : '—'; };
 const perOjo = id => (ojo && ojo.personal || []).find(x => x.id === id);
 
+/* Un día y una sucursal tienen UN cierre. El Ojo Maestro llegó a guardar un
+   registro nuevo por cada envío (id aleatorio), así que un mismo día podía
+   aparecer 12 veces y multiplicar la venta. Aquí se deduplica siempre:
+   gana el más reciente. Nunca sumar cierres sin pasar por esta función. */
 function cierresEn(ini, fin, sid) {
-  return ((ojo && ojo.cierres) || []).filter(c => c.fecha >= ini && c.fecha <= fin && (!sid || c.sucursalId === sid));
+  const l = ((ojo && ojo.cierres) || []).filter(c => c.fecha >= ini && c.fecha <= fin && (!sid || c.sucursalId === sid));
+  const m = {};
+  l.forEach(c => {
+    const k = c.fecha + '|' + c.sucursalId;
+    if (!m[k] || (c.ts || 0) > (m[k].ts || 0)) m[k] = c;
+  });
+  return Object.keys(m).map(k => m[k]);
+}
+/* cuántos cierres sobran en toda la base (señal de que el origen duplica) */
+function cierresDuplicados() {
+  const todos = ((ojo && ojo.cierres) || []);
+  const vistos = {};
+  let dup = 0;
+  todos.forEach(c => { const k = c.fecha + '|' + c.sucursalId; if (vistos[k]) dup++; else vistos[k] = 1; });
+  return dup;
 }
 function ventasEn(ini, fin, sid) { return cierresEn(ini, fin, sid).reduce((a, c) => a + (Number(c.ventas) || 0), 0); }
 function turnosEn(ini, fin, sid) {
@@ -413,6 +431,15 @@ function ciegos() {
       if (r.prime != null && r.prime > 65) push('prime-alto', { v: Math.round(r.prime), suc: s.nombre }, { ir: () => ir('scr-numeros'), et: 'Ver' });
     });
   }
+
+  /* 3a · integridad de los datos de origen */
+  const dup = cierresDuplicados();
+  if (dup) out.push({
+    clave: 'cierres-duplicados', t: 'Cierres duplicados en el Ojo Maestro',
+    d: 'Hay ' + dup + ' cierre(s) repetidos del mismo día y sucursal. El Mentor ya los ignora para calcular, ' +
+      'pero mientras el Ojo Maestro los siga generando, cualquier reporte que salga de ahí (hoja de Sheets, correos) va inflado.',
+    s: 3, et: 'Ver', ir: () => ir('scr-numeros')
+  });
 
   /* 3b · puesta en marcha: solo mientras falte para el arranque */
   const faltanDias = diasEntre(hoy, db.config.arranqueOjo);
@@ -1173,8 +1200,8 @@ function renderNumeros() {
     '<div style="flex:1;text-align:center"><b>' + MESES[+m - 1] + ' ' + y + '</b></div>' +
     '<button class="btn s chico" onclick="cambiarMes(1)">→</button></div>' +
     '<div class="fila" style="margin-top:10px"><button class="btn m chico" onclick="loyTraer()">🧾 Traer de Loyverse</button>' +
-    '<button class="btn s chico" onclick="loyTiendas()">🔗 Emparejar tiendas</button></div>' +
-    '<div class="mini mut" style="margin-top:8px">Loyverse trae ventas del punto de venta, número de tickets y costo de la mercancía vendida. Requiere el token configurado en Apps Script (ver la guía).</div></div>';
+    '<button class="btn s chico" onclick="traerOjo(true)">👁️ Releer operación</button></div>' +
+    '<div class="mini mut" style="margin-top:8px">Loyverse da las ventas del punto de venta y el número de tickets reales (de ahí sale tu ticket promedio). Usa el mismo conector que ya vive en el Ojo Maestro.</div></div>';
 
   sucursales().forEach(s => {
     const r = resultado(mesNum, s.id);
@@ -1245,72 +1272,46 @@ function renderNumeros() {
         '<div class="d">' + esc(k.ref) + '</div></div></div>').join('') + '</div>';
   $('numeros-body').innerHTML = h;
 }
-/* ---------- Loyverse ---------- */
-async function loyTiendas() {
-  if (!enLinea()) { toast('Conecta el backend primero'); return; }
-  toast('Consultando Loyverse…');
-  try {
-    const j = await llamar({ action: 'loyTiendas' });
-    if (!j || !j.ok) { modalLoyError(j); return; }
-    const sucs = sucursales();
-    modal('<h2>Emparejar tiendas de Loyverse</h2>' +
-      '<p class="peq mut">Dile al mentor qué tienda de Loyverse corresponde a cada sucursal del Ojo Maestro.</p>' +
-      j.tiendas.map(t => '<div style="margin-top:12px"><label>' + esc(t.nombre) + '</label>' +
-        '<select id="loy-' + t.id + '"><option value="">— ignorar —</option>' +
-        sucs.map(s => '<option value="' + s.id + '"' +
-          ((db.config.mapaLoyverse[t.id] === s.id ||
-            (!db.config.mapaLoyverse[t.id] && s.nombre.toLowerCase().slice(0, 4) === t.nombre.toLowerCase().slice(0, 4))) ? ' selected' : '') +
-          '>' + esc(s.nombre) + '</option>').join('') + '</select></div>').join('') +
-      '<div class="fila der" style="margin-top:16px"><button class="btn s chico" onclick="cerrarModal()">Cancelar</button>' +
-      '<button class="btn p chico" onclick="loyGuardarMapa(' + JSON.stringify(j.tiendas.map(t => t.id)).replace(/"/g, '&quot;') + ')">Guardar</button></div>');
-  } catch (e) { toast('No se pudo consultar'); }
-}
-function loyGuardarMapa(ids) {
-  ids.forEach(id => { const v = ($('loy-' + id) || {}).value || ''; if (v) db.config.mapaLoyverse[id] = v; else delete db.config.mapaLoyverse[id]; });
-  guardarDB(); cerrarModal(); toast('Tiendas emparejadas');
-}
-function modalLoyError(j) {
-  const e = (j && j.error) || 'sin respuesta';
-  modal('<h2>Loyverse no respondió</h2><p class="peq">Error: <b>' + esc(e) + '</b></p>' +
-    (/sin token/i.test(e)
-      ? '<p class="peq mut">Falta el token. En el editor de Apps Script: engrane <b>Configuración del proyecto</b> → <b>Propiedades del script</b> → agregar <code>LOYVERSE_TOKEN</code> con el token que generes en el Back Office de Loyverse. Nunca lo pegues en el código ni lo mandes por chat.</p>'
-      : /desconocida/i.test(e)
-        ? '<p class="peq mut">El backend todavía no tiene el módulo de Loyverse. Pega <code>Code-mentor.gs</code> y vuelve a publicar.</p>'
-        : '<p class="peq mut">' + esc((j && j.detalle) || '') + '</p>') +
-    '<div class="fila der" style="margin-top:14px"><button class="btn s chico" onclick="cerrarModal()">Entendido</button></div>');
-}
+/* ---------- Loyverse ----------
+   Reusa el conector que YA vive en el Ojo Maestro (acción 'loyverse',
+   un día y una sucursal por llamada). No duplicamos token ni mapeo de
+   tiendas: eso ya está resuelto allá y una sola verdad basta. */
 async function loyTraer() {
   if (!enLinea()) { toast('Conecta el backend primero'); return; }
-  const ini = mesNum + '-01';
-  const fin = isoLocal(new Date(+mesNum.slice(0, 4), +mesNum.slice(5, 7), 0));   // último día del mes
-  toast('Leyendo Loyverse… puede tardar');
-  try {
-    const j = await llamar({ action: 'loyResumen', desde: ini, hasta: fin });
-    if (!j || !j.ok) { modalLoyError(j); return; }
-    const mapa = db.config.mapaLoyverse || {};
-    const acum = {}; const sinMapear = {};
-    (j.dias || []).forEach(d => {
-      const sid = mapa[d.tienda];
-      if (!sid) { sinMapear[d.tienda] = (sinMapear[d.tienda] || 0) + d.ventas; return; }
-      if (!acum[sid]) acum[sid] = { ventas: 0, tickets: 0, costo: 0, descuentos: 0, dias: 0 };
-      const a = acum[sid];
-      a.ventas += d.ventas; a.tickets += d.tickets; a.costo += d.costo; a.descuentos += d.descuentos; a.dias++;
-    });
-    if (!Object.keys(acum).length) {
-      modal('<h2>No pude asignar las ventas</h2><p class="peq">Loyverse respondió, pero sus tiendas todavía no están emparejadas con tus sucursales.</p>' +
-        '<div class="fila der" style="margin-top:14px"><button class="btn p chico" onclick="cerrarModal();loyTiendas()">Emparejar ahora</button></div>');
-      return;
-    }
-    if (!db.loyverse[mesNum]) db.loyverse[mesNum] = {};
-    Object.keys(acum).forEach(sid => { db.loyverse[mesNum][sid] = Object.assign({ ts: Date.now() }, acum[sid]); });
-    anotar('numeros', '🧾 Loyverse — ' + mesNum, Object.keys(acum).map(sid => {
-      const a = acum[sid];
-      return nomSuc(sid) + ': ' + fmt$(a.ventas) + ' · ' + a.tickets + ' tickets · costo ' + fmt$(a.costo) +
-        (a.ventas > 0 ? ' (' + fmtPct(a.costo / a.ventas * 100) + ')' : '');
-    }).join('\n'));
-    guardarDB(); renderNumeros(); toast('🧾 Loyverse: ' + Object.keys(acum).length + ' sucursal(es)');
-  } catch (e) { toast('No se pudo leer Loyverse'); }
+  if (!haySuc()) { toast('Primero lee la operación'); return; }
+  const sucs = sucursales();
+  const total = diasDelMes(mesNum);
+  const hoy = hoyISO();
+  const acum = {}; sucs.forEach(s => acum[s.id] = { ventas: 0, tickets: 0, efectivo: 0, tarjeta: 0, dias: 0 });
+  let fallos = 0;
+  modal('<h2>Leyendo Loyverse…</h2><div class="barra"><i id="loy-b" style="width:0%"></i></div>' +
+    '<div class="peq mut" style="margin-top:8px" id="loy-t">Preparando…</div>');
+  for (let d = 1; d <= total; d++) {
+    const f = mesNum + '-' + String(d).padStart(2, '0');
+    if (f > hoy) break;
+    if ($('loy-t')) { $('loy-t').textContent = 'Día ' + d + ' de ' + total; $('loy-b').style.width = Math.round(d / total * 100) + '%'; }
+    try {
+      const res = await Promise.all(sucs.map(s => llamar({ action: 'loyverse', fecha: f, sucursalId: s.id })));
+      res.forEach((r, i) => {
+        if (!r || !r.ok) { fallos++; return; }
+        const a = acum[sucs[i].id];
+        a.ventas += Number(r.ventas) || 0; a.tickets += Number(r.recibos) || 0;
+        a.efectivo += Number(r.efectivo) || 0; a.tarjeta += Number(r.tarjeta) || 0;
+        if ((Number(r.ventas) || 0) > 0) a.dias++;
+      });
+    } catch (e) { fallos++; }
+  }
+  if (!db.loyverse[mesNum]) db.loyverse[mesNum] = {};
+  sucs.forEach(s => { db.loyverse[mesNum][s.id] = Object.assign({ ts: Date.now() }, acum[s.id]); });
+  anotar('numeros', '🧾 Loyverse — ' + mesNum, sucs.map(s => {
+    const a = acum[s.id];
+    return s.nombre + ': ' + fmt$(a.ventas) + ' · ' + a.tickets + ' tickets · ticket prom. ' +
+      (a.tickets ? fmt$(a.ventas / a.tickets) : '—') + ' · ' + a.dias + ' días con venta';
+  }).join('\n'));
+  guardarDB(); cerrarModal(); renderNumeros();
+  toast(fallos ? '🧾 Listo, con ' + fallos + ' día(s) sin respuesta' : '🧾 Loyverse actualizado');
 }
+const diasDelMes = mes => new Date(+mes.slice(0, 4), +mes.slice(5, 7), 0).getDate();
 /* La nómina se cuenta UNA vez. Aquí se ve cuál se usó y qué tan lejos está
    el sueldo que traías en la cabeza de lo que de verdad se paga. */
 function cuadreNomina(r) {
