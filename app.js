@@ -474,17 +474,17 @@ function ciegos() {
   }
 
   /* 4 · disciplina del propio sistema */
-  const compVencidos = db.compromisos.filter(c => !c.hecho && c.limite && c.limite < hoy);
+  const compVencidos = vivos('compromisos').filter(c => !c.hecho && c.limite && c.limite < hoy);
   if (compVencidos.length) push('compromiso-vencido', { n: compVencidos.length }, { ir: () => ir('scr-misiones'), et: 'Revisar' });
 
   const ultConsejo = db.consejos.length ? db.consejos[0].fecha : null;
   if (!ultConsejo) push('sin-consejo', { n: 'varios' }, { ir: () => ir('scr-consejo'), et: 'Hacerlo' });
   else { const d = diasEntre(ultConsejo, hoy); if (d >= 10) push('sin-consejo', { n: d }, { ir: () => ir('scr-consejo'), et: 'Hacerlo' }); }
 
-  const ultRitual = db.rituales.filter(r => r.rol === 'director')[0];
+  const ultRitual = vivos('rituales').filter(r => r.rol === 'director')[0];
   if (ultRitual) { const d = diasEntre(ultRitual.fecha, hoy); if (d >= 3) push('sin-ritual', { n: d }); }
 
-  db.misiones.filter(m => m.activa).forEach(m => {
+  vivos('misiones').filter(m => m.activa).forEach(m => {
     const d = m.ultimoAvance ? diasEntre(m.ultimoAvance, hoy) : 999;
     if (d >= 21) push('meta-sin-avance', { meta: m.objetivo, n: d === 999 ? 'muchos' : d }, { ir: () => ir('scr-misiones'), et: 'Ver' });
   });
@@ -493,11 +493,11 @@ function ciegos() {
   if (stephUlt && diasEntre(stephUlt, hoy) >= 21) push('steph-detenida', { n: diasEntre(stephUlt, hoy) }, { ir: () => ir('scr-steph'), et: 'Ver' });
 
   /* retos de aprendizaje estancados o vencidos */
-  const retoVencido = db.retos.filter(r => r.estado !== 'hecho' && r.estado !== 'archivado' && r.limite && r.limite < hoy);
+  const retoVencido = vivos('retos').filter(r => r.estado !== 'hecho' && r.estado !== 'archivado' && r.limite && r.limite < hoy);
   if (retoVencido.length) push('reto-estancado', { n: retoVencido.length }, { ir: () => ir('scr-retos'), et: 'Ver' });
 
   /* 5 · fechas por vencer */
-  db.fechas.forEach(f => {
+  vivos('fechas').forEach(f => {
     if (!f.vence) return; const d = diasEntre(hoy, f.vence);
     if (d <= 60 && d >= 0) out.push({ clave: 'fecha', t: 'Vence pronto: ' + f.t, d: 'Vence en ' + d + ' día(s) (' + fmtFecha(f.vence) + ').', s: d <= 15 ? 3 : 2 });
     if (d < 0) out.push({ clave: 'fecha', t: 'VENCIDO: ' + f.t, d: 'Venció hace ' + Math.abs(d) + ' día(s).', s: 3 });
@@ -810,7 +810,7 @@ function guardarEdicionRitual(id) {
 /* --- compromisos --- */
 function cardCompromisos() {
   const hoy = hoyISO();
-  const abiertos = db.compromisos.filter(c => !c.hecho && (rol === 'director' ? true : c.rol === rol));
+  const abiertos = vivos('compromisos').filter(c => !c.hecho && (rol === 'director' ? true : c.rol === rol));
   let h = '<div class="card"><h2>Compromisos abiertos</h2>';
   if (!abiertos.length) h += '<p class="peq mut">Sin compromisos pendientes. Un compromiso vale más que diez ideas.</p>';
   else h += abiertos.slice(0, 12).map(c => {
@@ -960,7 +960,7 @@ function bloqueNumeros() {
 }
 function bloqueCompromisos() {
   const hoy = hoyISO();
-  const abiertos = db.compromisos.filter(c => !c.hecho);
+  const abiertos = vivos('compromisos').filter(c => !c.hecho);
   if (!abiertos.length) return '<p class="peq mut" style="margin:8px 0">Sin compromisos abiertos de la semana pasada.</p>';
   return abiertos.map(c => '<div class="mod"><div class="chk" onclick="cerrarCompromiso(\'' + c.id + '\')"></div>' +
     '<div class="cuerpo"><div class="t">' + esc(c.t) + '</div><div class="d">' +
@@ -968,8 +968,7 @@ function bloqueCompromisos() {
     '<button class="btn s chico" onclick="borrarCompromiso(\'' + c.id + '\')">Quitar</button></div>').join('');
 }
 function borrarCompromiso(id) {
-  const c = db.compromisos.find(x => x.id === id);
-  db.compromisos = db.compromisos.filter(x => x.id !== id);
+  const c = borrar('compromisos', id);
   if (c) anotar('compromiso', 'Compromiso eliminado', c.t);
   guardarDB(); repintar();
 }
@@ -1509,7 +1508,7 @@ function renderMisiones() {
     '<p class="peq mut">Un objetivo, máximo 3 resultados clave con número. Lo que no tiene número no es meta.</p>' +
     '<button class="btn m chico" style="margin-top:8px" onclick="nuevaMision()">+ Nueva misión</button></div>';
 
-  const activas = db.misiones.filter(m => m.activa);
+  const activas = vivos('misiones').filter(m => m.activa);
   if (!activas.length) h += '<div class="card"><p class="peq mut">Sin misión activa. Trabajar sin meta trimestral es trabajar por inercia.</p></div>';
   activas.forEach(m => {
     const avance = m.krs.length ? m.krs.reduce((a, k) => a + Math.min(1, (Number(k.actual) || 0) / (Number(k.meta) || 1)), 0) / m.krs.length : 0;
@@ -1533,7 +1532,7 @@ function renderMisiones() {
   /* fechas críticas */
   h += '<div class="card"><h2>Fechas que no se pueden olvidar</h2>' +
     '<p class="peq mut">Licencias, permisos, seguros, contratos, impuestos. El mentor te avisa 60 días antes.</p>';
-  if (db.fechas.length) h += db.fechas.slice().sort((a, b) => (a.vence || '').localeCompare(b.vence || '')).map(f => {
+  if (vivos('fechas').length) h += vivos('fechas').slice().sort((a, b) => (a.vence || '').localeCompare(b.vence || '')).map(f => {
     const d = f.vence ? diasEntre(hoyISO(), f.vence) : null;
     return '<div class="item"><span class="em">' + (d != null && d < 0 ? '🔴' : d != null && d <= 60 ? '🟠' : '🗓️') + '</span>' +
       '<div class="cuerpo"><div class="t">' + esc(f.t) + '</div><div class="d">' + (f.vence ? fmtFecha(f.vence) + (d != null ? ' · ' + (d < 0 ? 'vencido hace ' + Math.abs(d) + ' días' : 'en ' + d + ' días') : '') : 'sin fecha') + '</div></div>' +
@@ -1543,7 +1542,7 @@ function renderMisiones() {
     '<input id="fe-v" type="date" style="flex:1"><button class="btn p chico" onclick="nuevaFecha()">Agregar</button></div></div>';
 
   /* cerradas */
-  const cerradas = db.misiones.filter(m => !m.activa);
+  const cerradas = vivos('misiones').filter(m => !m.activa);
   if (cerradas.length) h += '<div class="card"><h2>Misiones cerradas</h2>' + cerradas.map(m =>
     '<div class="item"><span class="em">🏁</span><div class="cuerpo"><div class="t">' + esc(m.objetivo) + '</div>' +
     '<div class="d">' + esc(m.trimestre || '') + '</div></div></div>').join('') + '</div>';
@@ -1587,7 +1586,7 @@ function nuevaFecha() {
   db.fechas.push({ id: uid(), t, vence: $('fe-v').value || '' });
   guardarDB(); repintar(); toast('Fecha agregada');
 }
-function borrarFecha(id) { db.fechas = db.fechas.filter(f => f.id !== id); guardarDB(); repintar(); }
+function borrarFecha(id) { borrar('fechas', id); guardarDB(); repintar(); }
 
 /* ============================================================
    📚 ACADEMIA
@@ -1636,7 +1635,7 @@ function renderBitacora() {
     '<button class="btn p chico" onclick="notaLibre()">Anotar</button></div></div>';
 
   const q = buscaBit.toLowerCase();
-  const lista = db.bitacora.filter(e =>
+  const lista = vivos('bitacora').filter(e =>
     (!filtroBit || e.tipo === filtroBit) &&
     (rol === 'director' || e.rol === rol) &&
     (!q || (e.t + ' ' + e.c).toLowerCase().includes(q))
@@ -1715,7 +1714,7 @@ function renderSteph() {
     h += '</div>';
 
     /* ritual de Steph visto por Dirección */
-    const rits = db.rituales.filter(r => r.rol === 'gerencia').slice(0, 8);
+    const rits = vivos('rituales').filter(r => r.rol === 'gerencia').slice(0, 8);
     if (rits.length) h += '<div class="card"><h2>Sus últimos registros</h2>' + rits.map(r =>
       '<div class="e" style="padding:10px 0;border-bottom:1px solid var(--borde)"><div class="mini mut">' + fmtFecha(r.fecha) + '</div>' +
       '<div class="peq" style="font-weight:600">' + esc(r.pregunta) + '</div>' +
@@ -1879,7 +1878,7 @@ function aplicarCV() {
    Cuando chocas con algo que no sabes, se vuelve un reto rastreable.
 ============================================================ */
 const tipoReto = id => M.TIPOS_RETO.find(t => t.id === id) || { em: '📌', n: '—' };
-const retosAbiertos = () => db.retos.filter(r => r.estado !== 'hecho' && r.estado !== 'archivado');
+const retosAbiertos = () => vivos('retos').filter(r => r.estado !== 'hecho' && r.estado !== 'archivado');
 
 let filtroReto = 'abiertos';
 function renderRetos() {
@@ -1908,7 +1907,7 @@ function renderRetos() {
     [['abiertos', 'Abiertos ' + abiertos.length], ['en-curso', 'En curso ' + enCurso], ['hechos', 'Aprendidos'], ['todos', 'Todos']]
       .map(([v, t]) => '<button class="' + (filtroReto === v ? 'on' : '') + '" onclick="filtroReto=\'' + v + '\';renderRetos()">' + t + '</button>').join('') + '</div>';
 
-  const lista = db.retos.filter(r => {
+  const lista = vivos('retos').filter(r => {
     if (filtroReto === 'abiertos') return r.estado !== 'hecho' && r.estado !== 'archivado';
     if (filtroReto === 'en-curso') return r.estado === 'en-curso';
     if (filtroReto === 'hechos') return r.estado === 'hecho';
@@ -1965,7 +1964,7 @@ function cardReto(r) {
 function nuevoReto(pre) {
   pre = pre || {};
   const areas = M.AREAS.map(a => '<option value="' + a.id + '"' + (pre.areaId === a.id ? ' selected' : '') + '>' + a.em + ' ' + esc(a.n) + '</option>').join('');
-  const mis = db.misiones.filter(m => m.activa).map(m => '<option value="' + m.id + '"' + (pre.misionId === m.id ? ' selected' : '') + '>' + esc(m.objetivo.slice(0, 40)) + '</option>').join('');
+  const mis = vivos('misiones').filter(m => m.activa).map(m => '<option value="' + m.id + '"' + (pre.misionId === m.id ? ' selected' : '') + '>' + esc(m.objetivo.slice(0, 40)) + '</option>').join('');
   modal('<h2>Tengo algo que aprender</h2>' +
     '<label>¿Qué necesitas aprender o resolver?</label>' +
     '<input id="rt-t" value="' + esc(pre.titulo || '') + '" placeholder="Ej. Cómo bajar el costo del boneless sin bajar la porción">' +
@@ -2000,7 +1999,17 @@ function guardarReto() {
 }
 function arrancarReto(id) { const r = db.retos.find(x => x.id === id); if (!r) return; r.estado = 'en-curso'; r.ts = Date.now(); guardarDB(); renderRetos(); }
 function pasoReto(id, i) { const r = db.retos.find(x => x.id === id); if (!r || !r.pasos[i]) return; r.pasos[i].done = !r.pasos[i].done; if (r.estado === 'nuevo') r.estado = 'en-curso'; r.ts = Date.now(); guardarDB(); renderRetos(); }
-function borrarReto(id) { const r = db.retos.find(x => x.id === id); db.retos = db.retos.filter(x => x.id !== id); if (r) anotar('reto', '🗑️ Reto eliminado', r.titulo); guardarDB(); renderRetos(); }
+/* Borrar = marcar, no quitar. El servidor une por id: si el registro
+   desaparece del dispositivo, la siguiente sincronización lo revive.
+   La marca con ts nuevo sí gana y el borrado se propaga. */
+function borrar(lista, id) {
+  const x = (db[lista] || []).find(y => y.id === id);
+  if (x) { x.del = true; x.ts = Date.now(); }
+  return x;
+}
+const vivos = lista => (db[lista] || []).filter(x => !x.del);
+
+function borrarReto(id) { const r = borrar('retos', id); if (r) anotar('reto', '🗑️ Reto eliminado', r.titulo); guardarDB(); renderRetos(); }
 function completarReto(id) {
   const r = db.retos.find(x => x.id === id); if (!r) return;
   modal('<h2>Ya lo aprendí</h2><p class="peq mut">Lo más valioso: en una frase, ¿qué te llevas? Queda en la Bitácora para siempre.</p>' +
