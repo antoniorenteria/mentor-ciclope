@@ -1282,10 +1282,27 @@ async function loyTraer() {
   const sucs = sucursales();
   const total = diasDelMes(mesNum);
   const hoy = hoyISO();
+  const ini = mesNum + '-01';
+  const fin = (mesNum + '-' + String(total).padStart(2, '0')) > hoy ? hoy : mesNum + '-' + String(total).padStart(2, '0');
+
+  /* vía rápida: el servidor recorre el mes en una sola llamada */
+  modal('<h2>Leyendo Loyverse…</h2><div class="barra"><i id="loy-b" style="width:15%"></i></div>' +
+    '<div class="peq mut" style="margin-top:8px" id="loy-t">Pidiendo el mes completo…</div>');
+  try {
+    const j = await llamar({ action: 'loyRango', desde: ini, hasta: fin, sucursales: sucs.map(s => s.id) });
+    if (j && j.ok && j.suc) {
+      if (!db.loyverse[mesNum]) db.loyverse[mesNum] = {};
+      sucs.forEach(s => { if (j.suc[s.id]) db.loyverse[mesNum][s.id] = Object.assign({ ts: Date.now() }, j.suc[s.id]); });
+      anotarLoyverse(sucs);
+      guardarDB(); cerrarModal(); renderNumeros(); toast('🧾 Loyverse actualizado');
+      return;
+    }
+  } catch (e) { /* cae a la vía lenta */ }
+
+  /* vía lenta: día por día, funciona aunque el backend no tenga el módulo */
+  if ($('loy-t')) $('loy-t').textContent = 'Día por día (el backend aún no tiene la vía rápida)…';
   const acum = {}; sucs.forEach(s => acum[s.id] = { ventas: 0, tickets: 0, efectivo: 0, tarjeta: 0, dias: 0 });
   let fallos = 0;
-  modal('<h2>Leyendo Loyverse…</h2><div class="barra"><i id="loy-b" style="width:0%"></i></div>' +
-    '<div class="peq mut" style="margin-top:8px" id="loy-t">Preparando…</div>');
   for (let d = 1; d <= total; d++) {
     const f = mesNum + '-' + String(d).padStart(2, '0');
     if (f > hoy) break;
@@ -1303,13 +1320,16 @@ async function loyTraer() {
   }
   if (!db.loyverse[mesNum]) db.loyverse[mesNum] = {};
   sucs.forEach(s => { db.loyverse[mesNum][s.id] = Object.assign({ ts: Date.now() }, acum[s.id]); });
-  anotar('numeros', '🧾 Loyverse — ' + mesNum, sucs.map(s => {
-    const a = acum[s.id];
-    return s.nombre + ': ' + fmt$(a.ventas) + ' · ' + a.tickets + ' tickets · ticket prom. ' +
-      (a.tickets ? fmt$(a.ventas / a.tickets) : '—') + ' · ' + a.dias + ' días con venta';
-  }).join('\n'));
+  anotarLoyverse(sucs);
   guardarDB(); cerrarModal(); renderNumeros();
   toast(fallos ? '🧾 Listo, con ' + fallos + ' día(s) sin respuesta' : '🧾 Loyverse actualizado');
+}
+function anotarLoyverse(sucs) {
+  anotar('numeros', '🧾 Loyverse — ' + mesNum, sucs.map(s => {
+    const a = (db.loyverse[mesNum] || {})[s.id]; if (!a) return '';
+    return s.nombre + ': ' + fmt$(a.ventas) + ' · ' + a.tickets + ' tickets · ticket prom. ' +
+      (a.tickets ? fmt$(a.ventas / a.tickets) : '—') + ' · ' + a.dias + ' días con venta';
+  }).filter(Boolean).join('\n'));
 }
 const diasDelMes = mes => new Date(+mes.slice(0, 4), +mes.slice(5, 7), 0).getDate();
 /* La nómina se cuenta UNA vez. Aquí se ve cuál se usó y qué tan lejos está

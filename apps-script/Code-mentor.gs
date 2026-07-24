@@ -15,6 +15,7 @@
 
         if (accion === 'leer')       return respuesta(accionLeer());
         if (accion === 'mentorSync') return respuesta(accionMentorSync(req.db));
+        if (accion === 'loyRango')   return respuesta(accionLoyRango(req.desde, req.hasta, req.sucursales));
 
    5. IMPORTANTE - no basta con guardar:
       Implementar -> Administrar implementaciones -> lapiz (editar)
@@ -110,6 +111,53 @@ function mentorMezclar(a, b) {
   db.steph = { modulos: mods, evals: listaE, ultimo: (sa.ultimo > sb.ultimo ? sa.ultimo : sb.ultimo) || '' };
 
   return db;
+}
+
+/* ============================================================
+   LOYVERSE POR RANGO - una sola llamada en vez de 48
+
+   NO duplica nada: por dentro usa la MISMA funcion accionLoyverse que
+   ya tiene el Ojo Maestro (mismo token, mismo mapeo de tiendas). Solo
+   hace el recorrido del lado del servidor, que es donde debe hacerse.
+
+   Requiere agregar tambien esta linea en doPost:
+
+     if (accion === 'loyRango') return respuesta(accionLoyRango(req.desde, req.hasta, req.sucursales));
+============================================================ */
+function accionLoyRango(desde, hasta, sucursales) {
+  if (!desde || !hasta) return { ok: false, error: 'falta rango' };
+  if (!sucursales || !sucursales.length) return { ok: false, error: 'faltan sucursales' };
+  var acum = {}, dias = {};
+  for (var i = 0; i < sucursales.length; i++) {
+    acum[sucursales[i]] = { ventas: 0, tickets: 0, efectivo: 0, tarjeta: 0, otros: 0, dias: 0 };
+  }
+  var d = new Date(desde + 'T12:00:00');
+  var fin = new Date(hasta + 'T12:00:00');
+  var vueltas = 0;
+  while (d <= fin && vueltas < 40) {
+    vueltas++;
+    var f = Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    for (var s = 0; s < sucursales.length; s++) {
+      var sid = sucursales[s];
+      try {
+        var r = accionLoyverse(f, sid);
+        if (r && r.ok) {
+          var a = acum[sid];
+          var v = Number(r.ventas) || 0;
+          a.ventas += v;
+          a.tickets += Number(r.recibos) || 0;
+          a.efectivo += Number(r.efectivo) || 0;
+          a.tarjeta += Number(r.tarjeta) || 0;
+          a.otros += Number(r.otros) || 0;
+          if (v > 0) a.dias++;
+          if (!dias[f]) dias[f] = {};
+          dias[f][sid] = { ventas: v, tickets: Number(r.recibos) || 0 };
+        }
+      } catch (e) { /* un dia sin datos no debe tumbar el mes */ }
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return { ok: true, desde: desde, hasta: hasta, suc: acum, dias: dias };
 }
 
 /* ============================================================
