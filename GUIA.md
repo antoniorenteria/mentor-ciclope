@@ -3,6 +3,13 @@
 ### El Archivo de la Casa Amarilla
 *Auditoría, criterio y aprendizaje continuo para dirigir El Anillo del Cíclope.*
 
+## 🔗 Tu app está en línea
+
+**https://antoniorenteria.github.io/mentor-ciclope/**
+
+Ábrela en el teléfono → **Compartir → Agregar a pantalla de inicio**. Queda como app con el ojo de Mirano.
+El código es público (no tiene secretos); **tus datos viven solo en tu dispositivo y en tu Drive**, nunca en el repositorio.
+
 Si **El Ojo Maestro** es el sistema que hace que el negocio **opere**, El Mentor Cíclope es el que
 hace que el negocio **suba de nivel** — y que tú subas con él.
 
@@ -19,6 +26,9 @@ hace que el negocio **suba de nivel** — y que tú subas con él.
 | 📈 **Números** | Prime cost, punto de equilibrio, utilidad y ticket promedio por sucursal. |
 | 🎯 **Misiones** | Metas trimestrales (OKR), compromisos y fechas que no se pueden olvidar. |
 | 📚 **Academia** | 6 niveles de formación de dirección, con las prácticas de los mejores restaurantes del mundo. |
+| 🎓 **Retos** | Aprendizaje just-in-time: lo que te frena se vuelve un reto con recurso real y pasos. Incluye la Biblioteca del Cíclope. |
+| 🍔 **Escandallo** | Costo, margen y % real por platillo. Los gramajes ya vienen del recetario del Ojo Maestro. |
+| 🚦 **Puesta en marcha** | Los 16 puntos para dejar todo listo antes del arranque formal (1 de agosto). |
 | 🗝️ **Gerencia** | La ruta de desarrollo de Steph y su evaluación de desempeño. |
 | 📓 **Bitácora** | La memoria: todo lo que registras queda, buscable, para siempre. |
 
