@@ -84,6 +84,10 @@ function migrar() {
     ['luz', 'gas', 'agua', 'internet', 'servicios'].forEach(c => { if (f[c] === undefined) f[c] = 0; });
   });
   if (db.config.cvObjetivo === undefined) db.config.cvObjetivo = 35;   // meta de costo de ventas
+  /* promedio histórico real de mayo-julio 2026 según Loyverse (47-49 %).
+     Sirve de piso para que el punto de equilibrio tenga sentido desde el
+     primer día; se sustituye en cuanto se capture el costo del mes. */
+  if (db.config.cvDefault === undefined) db.config.cvDefault = 48;
   if (!db.config.mapaLoyverse) db.config.mapaLoyverse = {};            // tiendaLoyverse → sucursal
   /* Arranque formal del Ojo Maestro como fuente de nómina (Toño, 2026-07-23).
      Antes de esta fecha manda el sueldo declarado: si el equipo empieza a
@@ -302,7 +306,16 @@ function loyDe(mes, sid) { return (db.loyverse[mes] || {})[sid] || null; }
 
 function resultado(mes, sid) {
   const ini = mes + '-01', fin = mes + '-31';
-  const ventas = ventasEn(ini, fin, sid);
+  const L0 = loyDe(mes, sid);
+  /* JERARQUÍA DE LA VENTA: manda el punto de venta.
+     Los cierres que captura el equipo son el control, no la fuente: pueden
+     faltar días enteros (aún no cierran todos) y llegan sub-reportados.
+     Mezclar ventas de una fuente con tickets de la otra daba un ticket
+     promedio absurdo, así que ambos salen del mismo lado. */
+  const ventasCierres = ventasEn(ini, fin, sid);
+  const ventasLoyMes = L0 && L0.ventas > 0 ? L0.ventas : 0;
+  const ventas = ventasLoyMes || ventasCierres;
+  const fuenteVentas = ventasLoyMes ? 'Loyverse' : 'cierres';
   const f = fijosDe(sid), n = mesDe(mes, sid);
   /* NÓMINA — una sola vez. Si el equipo checa en el Ojo Maestro, ese es el
      número real del mes; el sueldo declarado queda solo como comparación.
@@ -314,13 +327,17 @@ function resultado(mes, sid) {
   const fuenteNomina = envivo ? 'turnos' : 'declarada';
   /* los sueldos NO van aquí: viajan en su propio renglón */
   const fijos = (+f.renta || 0) + serviciosDe(sid) + (+f.otros || 0);
-  const L = loyDe(mes, sid);
+  const L = L0;
   /* jerarquía del costo: lo que compraste (exacto) > lo que dice el punto de
-     venta (bueno) > el % que declaraste (estimado) */
-  const cvPct = +n.cvPct || 0;
+     venta (bueno) > el % que declaraste > el promedio histórico del negocio */
+  const cvPct = (+n.cvPct || 0) || (Number(db.config.cvDefault) || 0);
+  const cvEsDefault = !(+n.cvPct > 0) && cvPct > 0;
   let insumos = +n.insumos || 0, estimado = false, fuente = 'capturado';
   if (!insumos && L && L.costo > 0) { insumos = L.costo; fuente = 'Loyverse'; }
-  else if (!insumos && cvPct > 0 && ventas > 0) { insumos = ventas * cvPct / 100; estimado = true; fuente = 'estimado'; }
+  else if (!insumos && cvPct > 0 && ventas > 0) {
+    insumos = ventas * cvPct / 100; estimado = true;
+    fuente = cvEsDefault ? 'promedio histórico' : 'estimado';
+  }
   const mkt = +n.marketing || 0, otros = +n.otros || 0;
   const utilidad = ventas - nomina - fijos - insumos - mkt - otros;
   const pct = v => ventas > 0 ? v / ventas * 100 : null;
@@ -330,9 +347,11 @@ function resultado(mes, sid) {
   const cvReal = ventas > 0 ? insumos / ventas : (cvPct / 100);
   const fijosTotales = fijos + nomina + mkt + otros;
   const equilibrio = cvReal < 0.98 ? fijosTotales / (1 - cvReal) : null;
-  const tickets = (+n.tickets || 0) || (L ? L.tickets : 0) || 0;
+  /* los tickets salen de la MISMA fuente que la venta */
+  const tickets = fuenteVentas === 'Loyverse' ? (L.tickets || 0) : (+n.tickets || 0);
   return {
     ventas, nomina, insumos, fijos, mkt, otros, utilidad, equilibrio, estimado, cvPct, fuente,
+    ventasCierres, fuenteVentas, cvEsDefault,
     nominaOjo, nominaDecl, fuenteNomina, fijosTotales, cvReal: cvReal * 100,
     energia: energiaDe(sid), diasAbiertos: diasAbiertos(mes),
     metaDia: equilibrio == null ? null : equilibrio / diasAbiertos(mes),
@@ -1208,7 +1227,7 @@ function renderNumeros() {
     const f = fijosDe(s.id), n = mesDe(mesNum, s.id);
     h += '<div class="card"><h2>' + esc(s.nombre) + '</h2>';
     h += '<div class="grid c4">' +
-      kpiBox('Ventas (real)', fmt$(r.ventas), 'del Ojo Maestro') +
+      kpiBox('Ventas del mes', fmt$(r.ventas), 'según ' + r.fuenteVentas + (r.tickets ? ' · ' + r.tickets + ' tickets' : '')) +
       kpiBox('Prime cost', r.prime == null ? '—' : fmtPct(r.prime), r.prime == null ? 'falta insumos' : (r.prime > 65 ? '⚠️ arriba de 65 %' : r.prime > 60 ? 'apretado' : 'sano'), r.prime > 65) +
       kpiBox('Punto de equilibrio', r.equilibrio == null ? '—' : fmt$(r.equilibrio),
         r.metaDia == null ? 'faltan datos' : '<b>' + fmt$(r.metaDia) + ' al día</b> · ' + r.diasAbiertos + ' días abiertos', r.equilibrio && r.ventas < r.equilibrio) +
@@ -1229,7 +1248,7 @@ function renderNumeros() {
       '</table></div>';
 
     if (r.ticketProm) h += '<div class="peq" style="margin-top:10px">Ticket promedio: <b>' + fmt$(r.ticketProm) + '</b> · ' + r.tickets.toLocaleString('es-MX') + ' tickets</div>';
-    h += cuadreLoyverse(r) + cuadreNomina(r);
+    h += proyeccionMes(r) + cuadreLoyverse(r) + cuadreNomina(r);
 
     h += escenarioCV(s.id, r);
 
@@ -1353,13 +1372,37 @@ function cuadreNomina(r) {
 
 /* comparación POS contra lo que reporta el equipo */
 function cuadreLoyverse(r) {
-  if (r.ventasLoy == null || !r.ventasLoy || !r.ventas) return '';
-  const dif = r.ventas - r.ventasLoy, pct = Math.abs(dif / r.ventasLoy * 100);
+  if (!r.ventasLoy || !r.ventasCierres) return '';
+  const dif = r.ventasCierres - r.ventasLoy, pct = Math.abs(dif / r.ventasLoy * 100);
   if (pct < 2) return '<div class="peq" style="margin-top:10px;color:var(--ok)">✅ Cierres del equipo y Loyverse cuadran (diferencia ' + fmtPct(pct) + ').</div>';
   return '<div class="peq" style="margin-top:10px;color:var(--' + (pct > 5 ? 'alerta' : 'aviso') + ')">' +
-    (pct > 5 ? '🔴' : '🟠') + ' Loyverse marca ' + fmt$(r.ventasLoy) + ' y los cierres del equipo ' + fmt$(r.ventas) +
-    ': ' + (dif > 0 ? 'sobran ' : 'faltan ') + fmt$(Math.abs(dif)) + ' (' + fmtPct(pct) + '). ' +
-    'Vale la pena revisar de dónde sale la diferencia.</div>';
+    (pct > 5 ? '🔴' : '🟠') + ' Loyverse marca <b>' + fmt$(r.ventasLoy) + '</b> y los cierres del equipo <b>' + fmt$(r.ventasCierres) + '</b>. ' +
+    'Puede ser que falten días por cerrar o que se esté capturando de menos. El cálculo usa Loyverse, que es la caja.</div>';
+}
+
+/* Un mes a medias se lee mal: los costos fijos ya están completos pero la
+   venta no. Sin proyectar, todo mes en curso parece una pérdida. */
+function proyeccionMes(r) {
+  if (mesNum !== mesISO(hoyISO())) return '';        // solo el mes en curso
+  const hoy = hoyISO();
+  const transcurridos = Number(hoy.slice(8)) - 1;    // días ya cerrados
+  if (transcurridos < 5 || transcurridos >= r.diasAbiertos) return '';
+  const factor = r.diasAbiertos / transcurridos;
+  const ventasProy = r.ventas * factor;
+  const insumosProy = r.insumos * factor;
+  const utilProy = ventasProy - insumosProy - r.fijosTotales;
+  const falta = r.equilibrio ? r.equilibrio - ventasProy : 0;
+  return '<div class="card" style="background:var(--fondo-3);margin:14px 0 0">' +
+    '<h3>Proyección al cierre del mes</h3>' +
+    '<div class="peq mut">Llevas ' + transcurridos + ' de ' + r.diasAbiertos + ' días. Al ritmo actual:</div>' +
+    '<div class="grid c3" style="margin-top:10px">' +
+    kpiBox('Ventas proyectadas', fmt$(ventasProy), '') +
+    kpiBox('Utilidad proyectada', fmt$(utilProy), utilProy >= 0 ? 'cierra en positivo' : 'cierra en pérdida', utilProy < 0) +
+    kpiBox(falta > 0 ? 'Falta para equilibrio' : 'Sobre el equilibrio', fmt$(Math.abs(falta)),
+      falta > 0 ? fmt$(falta / (r.diasAbiertos - transcurridos)) + ' más al día' +
+        (r.ticketProm ? ' ≈ ' + (Math.round(falta / (r.diasAbiertos - transcurridos) / r.ticketProm * 10) / 10) + ' tickets' : '')
+        : 'vas arriba', falta > 0) +
+    '</div></div>';
 }
 
 /* Comparativo de energía entre sucursales.
