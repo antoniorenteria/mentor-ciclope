@@ -1281,6 +1281,7 @@ function renderNumeros() {
       '<p class="peq mut" style="margin-top:10px">Recuerda: esta utilidad no incluye impuestos ni tu sueldo de dirección si no lo capturaste en sueldos fijos.</p></div>';
   }
 
+  h += decisionPrecioVolumen();
   h += comparativoEnergia();
 
   /* referencia de KPIs */
@@ -1402,6 +1403,57 @@ function proyeccionMes(r) {
         (r.ticketProm ? ' ≈ ' + (Math.round(falta / (r.diasAbiertos - transcurridos) / r.ticketProm * 10) / 10) + ' tickets' : '')
         : 'vas arriba', falta > 0) +
     '</div></div>';
+}
+
+/* ¿Subir precios o vender más? La pregunta del millón, resuelta con números.
+   Corre las dos palancas por separado y la combinación, sobre el mes real. */
+function decisionPrecioVolumen() {
+  let vtot = 0, ftot = 0, cvtot = 0, nSuc = 0, ticket = 0, tickets = 0;
+  const filas = sucursales().map(s => {
+    const r = resultado(mesNum, s.id);
+    const proj = (mesNum === mesISO(hoyISO()) && r.diasAbiertos) ? r.diasAbiertos / Math.max(1, Number(hoyISO().slice(8)) - 1) : 1;
+    const ventas = r.ventas * proj, cv = r.cvReal / 100;
+    vtot += ventas; ftot += r.fijosTotales; cvtot += cv * ventas; nSuc++;
+    if (r.ticketProm) { ticket += r.ticketProm; tickets++; }
+    return { s: s.nombre, ventas, cv, fijos: r.fijosTotales, util: ventas * (1 - cv) - r.fijosTotales, equilibrio: r.equilibrio, ticketProm: r.ticketProm };
+  });
+  if (!vtot) return '';
+  const cvProm = cvtot / vtot;
+  const ticketProm = tickets ? ticket / tickets : 0;
+
+  const costoHoy = vtot * cvProm;                       // costo en $ del mes
+  const subir = 0.10;
+  /* Hoy */
+  const utilHoy = vtot - costoHoy - ftot;
+  /* A · +10% precio: la venta sube, el costo en $ NO cambia */
+  const utilA = vtot * (1 + subir) - costoHoy - ftot;
+  /* B · +10% volumen: la venta sube y el costo en $ sube igual */
+  const utilB = vtot * (1 + subir) - costoHoy * (1 + subir) - ftot;
+  /* A+B · +10% precio y +10% volumen */
+  const utilAB = vtot * (1 + subir) * (1 + subir) - costoHoy * (1 + subir) - ftot;
+  /* cuánto volumen igualaría lo que da 10% de precio */
+  const volParaIgualar = (1 - cvProm) > 0 ? (utilA + ftot) / (vtot * (1 - cvProm)) - 1 : 0;
+  const cvA = cvProm / (1 + subir);
+
+  const card = (t, sub, util, extra, resalta) =>
+    '<div class="kpi' + (resalta ? ' alerta' : '') + '" style="' + (resalta ? 'border-color:var(--ok);background:color-mix(in srgb,var(--ok) 10%,var(--fondo-3))' : '') + '">' +
+    '<div class="et">' + t + '</div><div class="v" style="color:' + (util >= 0 ? 'var(--ok)' : 'var(--alerta)') + '">' + fmt$(util) + '</div>' +
+    '<div class="d">' + sub + (extra ? ' · ' + extra : '') + '</div></div>';
+
+  return '<div class="card acento"><h2>¿Subir precios o vender más?</h2>' +
+    '<p class="peq mut">Proyectado al mes completo, ambas sucursales juntas. Costo de ventas actual: <b>' + fmtPct(cvProm * 100) + '</b>. La respuesta con tus números:</p>' +
+    '<div class="grid c2" style="margin-top:10px">' +
+    card('Hoy', 'sin cambios', utilHoy) +
+    card('Subir precios 10%', 'mismo volumen', utilA, 'costo baja a ' + fmtPct(cvA * 100), true) +
+    card('Vender 10% más', 'mismo precio', utilB, 'el costo sube igual') +
+    card('Las dos juntas', '+10% precio y +10% volumen', utilAB) +
+    '</div>' +
+    '<div class="peq" style="margin-top:12px"><b>La conclusión:</b> subir precios 10% deja <b>' + fmt$(utilA - utilB) + ' más</b> que vender 10% más, ' +
+    'porque cuando subes precio el costo en pesos no se mueve, y cuando vendes más el costo sube contigo. ' +
+    'Para igualar por volumen lo que da un 10% de precio, tendrías que vender <b>' + fmtPct(volParaIgualar * 100) + ' más</b>' +
+    (ticketProm ? ' — con tu ticket de ' + fmt$(ticketProm) + ', eso es mucha más gente por la puerta.' : '.') + '</div>' +
+    '<div class="peq mut" style="margin-top:8px">Con un costo de ' + fmtPct(cvProm * 100) + ' (lo sano es 30-35%), <b>el precio es la palanca #1</b>. El volumen es el motor de crecimiento <i>después</i> de que el margen esté sano: sobre un platillo que deja bien, cada venta nueva sí construye.</div>' +
+    '</div>';
 }
 
 /* Comparativo de energía entre sucursales.
@@ -1751,126 +1803,111 @@ function guardarEval() {
    🍔 ESCANDALLO — costo real por platillo
    Los gramajes vienen del recetario; solo se capturan precios.
 ============================================================ */
-const precioInsumo = id => Number((db.insumos || {})[id] || 0);
-function costoReceta(r) {
-  let costo = 0, faltan = [];
-  r.items.forEach(([iid, c]) => {
-    if (!c) return;
-    const p = precioInsumo(iid);
-    if (!p) { faltan.push(iid); return; }
-    costo += p * c;
+/* Escandallo REAL: lee insumos + recetas del Ojo Maestro (89 insumos con
+   proveedor y precio, 54 recetas con gramaje). El Mentor solo calcula y
+   decide; la fuente de la verdad es el escandallo que arma Toño allá. */
+function hayEscandalloReal() { return !!(ojo && ojo.recetas && ojo.recetas.length && ojo.insumos && ojo.insumos.length); }
+function insumosMapa() { const m = {}; (ojo.insumos || []).forEach(i => m[i.id] = i); return m; }
+const costoUnidadInsumo = i => ((Number(i.precio) || 0) + (Number(i.envio) || 0)) / (Number(i.cant) || 1);
+
+function analisisReal(r, ins) {
+  let costo = 0; const faltan = [];
+  (r.ing || []).forEach(x => {
+    const i = ins[x.insumoId];
+    if (!i || !(Number(i.precio) > 0)) { faltan.push(x.insumoId); return; }
+    costo += costoUnidadInsumo(i) * (Number(x.c) || 0);
   });
-  return { costo, faltan, completo: !faltan.length };
+  costo = costo / (Number(r.porciones) || 1);
+  const precio = Number(r.precio) || 0;
+  return {
+    id: r.id, n: r.nombre, cat: r.categoria || 'Sin categoría', precio, costo,
+    margen: precio - costo, cvPct: precio > 0 ? costo / precio * 100 : null,
+    completo: !faltan.length, faltan,
+    precioMeta: cv => Math.ceil(costo / (cv / 100))     // precio para lograr cierto % de costo
+  };
 }
-function analisisReceta(r) {
-  const { costo, faltan, completo } = costoReceta(r);
-  const margen = r.precio - costo;
-  return { costo, faltan, completo, margen, cvPct: r.precio > 0 ? costo / r.precio * 100 : null };
-}
-/* costo de ventas promedio ponderado por lo que se vende */
-function cvPonderado() {
-  const mix = db.mixVentas || {};
-  let ing = 0, cost = 0, n = 0;
-  M.RECETAS_COSTO.forEach(r => {
-    const q = Number(mix[r.id] || 0); if (!q) return;
-    const a = analisisReceta(r); if (!a.completo) return;
-    ing += r.precio * q; cost += a.costo * q; n += q;
-  });
-  return n ? { pct: cost / ing * 100, ingreso: ing, costo: cost, platillos: n } : null;
+function escandalloReal() {
+  const ins = insumosMapa();
+  return (ojo.recetas || []).filter(r => r.activo !== false)
+    .map(r => analisisReal(r, ins))
+    .sort((a, b) => (b.cvPct || 0) - (a.cvPct || 0));
 }
 
 let catEsc = '';
 function renderEscandallo() {
   tituloBarra('scr-escandallo', 'Escandallo', 'Cuánto cuesta de verdad cada platillo');
-  const total = M.RECETAS_COSTO.length;
-  const listas = M.RECETAS_COSTO.filter(r => analisisReceta(r).completo).length;
-  const capturados = M.INSUMOS.filter(i => precioInsumo(i.id) > 0).length;
+  if (!hayEscandalloReal()) {
+    $('escandallo-body').innerHTML = '<div class="card"><h2>Falta leer tu escandallo</h2>' +
+      '<p class="peq mut">Tu escandallo (insumos, precios de proveedor y recetas) vive en el Ojo Maestro. Conecta el backend y lee la operación para traerlo.</p>' +
+      '<button class="btn p" onclick="traerOjo(true)">👁️ Leer del Ojo Maestro</button></div>';
+    return;
+  }
+  const lista = escandalloReal();
+  const meta = Number(db.config.cvObjetivo) || 35;
+  const promedio = lista.filter(r => r.completo && r.cvPct != null);
+  const cvSimple = promedio.length ? promedio.reduce((a, r) => a + r.cvPct, 0) / promedio.length : 0;
+  const rojos = promedio.filter(r => r.cvPct > 45).length;
 
-  let h = '<div class="card acento"><h2>El dato que decide todo</h2>' +
-    '<div class="barra"><i style="width:' + Math.round(capturados / M.INSUMOS.length * 100) + '%"></i></div>' +
-    '<div class="peq mut" style="margin-top:8px">' + capturados + ' de ' + M.INSUMOS.length + ' insumos con precio · ' +
-    listas + ' de ' + total + ' platillos costeados</div>' +
-    '<p class="peq" style="margin-top:12px">Los gramajes ya vienen del recetario del Ojo Maestro. Solo captura <b>cuánto te cuesta cada insumo</b> ' +
-    'en su unidad de compra, con la factura de esta semana. Cada precio que capturas cuesta 20 segundos y te dice si estás ganando o regalando.</p></div>';
+  let h = '<div class="card acento"><h2>Tu escandallo, del Ojo Maestro</h2>' +
+    '<div class="peq mut">' + lista.length + ' platillos costeados con ' + (ojo.insumos || []).length + ' insumos reales (proveedor y precio).</div>' +
+    '<div class="grid c3" style="margin-top:10px">' +
+    kpiBox('Costo promedio', fmtPct(cvSimple), 'meta: ' + meta + '%', cvSimple > 40) +
+    kpiBox('En rojo (>45%)', rojos + ' de ' + promedio.length, 'regalando margen', rojos > 0) +
+    kpiBox('Costo de ventas real', ojo ? fmtPct(48) : '—', 'según Loyverse') +
+    '</div>' +
+    '<p class="peq" style="margin-top:12px">La columna <b>Precio 35%</b> es a cuánto tendría que venderse cada platillo para dejar un costo sano. La diferencia con el precio actual es lo que estás dejando en la mesa.</p></div>';
 
-  const pond = cvPonderado();
-  if (pond) h += '<div class="card ' + (pond.pct > 40 ? 'peligro' : 'ok') + '"><h2>Tu costo de ventas real</h2>' +
-    '<div style="font-size:2.2rem;font-weight:800;line-height:1">' + fmtPct(pond.pct) + '</div>' +
-    '<div class="peq mut">Ponderado por lo que de verdad vendes (' + pond.platillos.toLocaleString('es-MX') + ' platillos capturados en el mix).</div>' +
-    '<button class="btn s chico" style="margin-top:10px" onclick="aplicarCV()">Usar este % en Números</button></div>';
-
-  /* platillos */
-  const cats = [''].concat([...new Set(M.RECETAS_COSTO.map(r => r.cat))]);
+  const cats = [''].concat([...new Set(lista.map(r => r.cat))]);
   h += '<div class="card"><div class="tabs">' + cats.map(c =>
-    '<button class="' + (catEsc === c ? 'on' : '') + '" onclick="catEsc=\'' + c + '\';renderEscandallo()">' + (c || 'Todos') + '</button>').join('') + '</div>' +
-    '<div class="tabla-wrap"><table><tr><th>Platillo</th><th class="num">Precio</th><th class="num">Costo</th><th class="num">Margen</th><th class="num">Costo %</th></tr>' +
-    M.RECETAS_COSTO.filter(r => !catEsc || r.cat === catEsc).map(r => {
-      const a = analisisReceta(r);
-      const col = !a.completo ? 'var(--muted)' : a.cvPct > 40 ? 'var(--alerta)' : a.cvPct > 33 ? 'var(--aviso)' : 'var(--ok)';
-      return '<tr onclick="verReceta(\'' + r.id + '\')" style="cursor:pointer"><td>' + esc(r.n) + '</td>' +
+    '<button class="' + (catEsc === c ? 'on' : '') + '" onclick="catEsc=\'' + esc(c) + '\';renderEscandallo()">' + (c || 'Todos') + '</button>').join('') + '</div>' +
+    '<div class="tabla-wrap"><table><tr><th>Platillo</th><th class="num">Precio</th><th class="num">Costo</th><th class="num">Costo %</th><th class="num">Precio ' + meta + '%</th></tr>' +
+    lista.filter(r => !catEsc || r.cat === catEsc).map(r => {
+      const col = !r.completo ? 'var(--muted)' : r.cvPct > 45 ? 'var(--alerta)' : r.cvPct > 38 ? 'var(--aviso)' : 'var(--ok)';
+      const pm = r.completo ? r.precioMeta(meta) : null;
+      const sube = pm && pm > r.precio;
+      return '<tr onclick="verReceta(\'' + esc(r.id) + '\')" style="cursor:pointer"><td>' + esc(r.n) + '</td>' +
         '<td class="num">' + fmt$(r.precio) + '</td>' +
-        '<td class="num">' + (a.completo ? fmt$(a.costo) : '<span class="mut">faltan ' + a.faltan.length + '</span>') + '</td>' +
-        '<td class="num">' + (a.completo ? fmt$(a.margen) : '—') + '</td>' +
-        '<td class="num" style="color:' + col + ';font-weight:700">' + (a.completo ? fmtPct(a.cvPct) : '—') + '</td></tr>';
+        '<td class="num">' + (r.completo ? fmt$(r.costo) : '<span class="mut">faltan ' + r.faltan.length + '</span>') + '</td>' +
+        '<td class="num" style="color:' + col + ';font-weight:700">' + (r.cvPct != null ? fmtPct(r.cvPct) : '—') + '</td>' +
+        '<td class="num">' + (pm ? (sube ? '<b>' + fmt$(pm) + '</b>' : fmt$(pm)) : '—') + '</td></tr>';
     }).join('') + '</table></div>' +
-    '<div class="mini mut" style="margin-top:8px">Verde ≤33 % · Ámbar 33-40 % · Rojo &gt;40 %. Toca un platillo para ver su desglose y ajustar gramajes.</div></div>';
+    '<div class="mini mut" style="margin-top:8px">Verde ≤38 % · Ámbar 38-45 % · Rojo &gt;45 %. Toca un platillo para ver de qué se compone su costo.</div></div>';
 
-  /* insumos por grupo */
-  const grupos = [...new Set(M.INSUMOS.map(i => i.g))];
-  grupos.forEach(g => {
-    h += '<div class="card"><h2>' + esc(g) + '</h2><div class="grid c2">' +
-      M.INSUMOS.filter(i => i.g === g).map(i =>
-        '<div><label>' + esc(i.n) + ' <span class="mut">($ por ' + i.u + ')</span></label>' +
-        '<input id="ins-' + i.id + '" type="number" inputmode="decimal" step="0.01" value="' + (precioInsumo(i.id) || '') + '" placeholder="0">' +
-        (i.ayuda ? '<div class="mini mut" style="margin-top:4px">' + esc(i.ayuda) + '</div>' : '') + '</div>').join('') +
-      '</div></div>';
-  });
-  h += '<div class="card"><button class="btn p" onclick="guardarInsumos()">💾 Guardar precios</button></div>';
+  /* los que más urge repreciar: rojos ordenados por lo que dejarías de perder */
+  const urgentes = promedio.filter(r => r.cvPct > 45).slice(0, 8);
+  if (urgentes.length) {
+    h += '<div class="card peligro"><h2>Los que urge repreciar</h2>' +
+      '<p class="peq mut">Cuestan más del 45%. Subirlos al ' + meta + '% de costo es la palanca más directa que tienes.</p>' +
+      '<div class="tabla-wrap"><table><tr><th>Platillo</th><th class="num">Hoy</th><th class="num">Sano</th><th class="num">Subir</th></tr>' +
+      urgentes.map(r => { const pm = r.precioMeta(meta), d = pm - r.precio;
+        return '<tr><td>' + esc(r.n) + ' <span class="mini mut">' + fmtPct(r.cvPct) + '</span></td>' +
+          '<td class="num">' + fmt$(r.precio) + '</td><td class="num"><b>' + fmt$(pm) + '</b></td>' +
+          '<td class="num" style="color:var(--ok)">+' + fmt$(d) + '</td></tr>'; }).join('') +
+      '</table></div></div>';
+  }
   $('escandallo-body').innerHTML = h;
 }
-function guardarInsumos() {
-  if (!db.insumos) db.insumos = {};
-  let n = 0;
-  M.INSUMOS.forEach(i => { const e = $('ins-' + i.id); if (!e) return; const v = Number(e.value || 0); if (v > 0) { db.insumos[i.id] = v; n++; } else delete db.insumos[i.id]; });
-  const pond = cvPonderado();
-  anotar('numeros', '🍔 Escandallo: ' + n + ' insumos con precio',
-    M.RECETAS_COSTO.filter(r => analisisReceta(r).completo)
-      .map(r => { const a = analisisReceta(r); return '· ' + r.n + ': cuesta ' + fmt$(a.costo) + ' de ' + fmt$(r.precio) + ' (' + fmtPct(a.cvPct) + ')'; }).join('\n') +
-    (pond ? '\nCosto de ventas ponderado: ' + fmtPct(pond.pct) : ''));
-  guardarDB(); renderEscandallo(); toast('💾 ' + n + ' precios guardados');
-}
 function verReceta(id) {
-  const r = M.RECETAS_COSTO.find(x => x.id === id); if (!r) return;
-  const a = analisisReceta(r);
+  const ins = insumosMapa();
+  const rr = (ojo.recetas || []).find(x => x.id === id); if (!rr) return;
+  const r = analisisReal(rr, ins);
+  const meta = Number(db.config.cvObjetivo) || 35;
   modal('<h2>' + esc(r.n) + '</h2>' +
-    '<div class="peq mut">Precio de venta ' + fmt$(r.precio) + (a.completo ? ' · cuesta ' + fmt$(a.costo) + ' (' + fmtPct(a.cvPct) + ')' : '') + '</div>' +
-    '<div class="tabla-wrap" style="margin-top:12px"><table><tr><th>Insumo</th><th class="num">Cantidad</th><th class="num">Costo</th></tr>' +
-    r.items.filter(([, c]) => c).map(([iid, c]) => {
-      const i = M.INSUMOS.find(x => x.id === iid) || { n: iid, u: '?' };
-      const p = precioInsumo(iid);
-      const cant = (i.u === 'kg' || i.u === 'L') ? (c * 1000) + (i.u === 'kg' ? ' g' : ' ml') : c + ' ' + i.u;
-      return '<tr><td>' + esc(i.n) + '</td><td class="num">' + cant + '</td>' +
-        '<td class="num">' + (p ? fmt$(p * c) : '<span style="color:var(--alerta)">falta precio</span>') + '</td></tr>';
+    '<div class="peq mut">Se vende en ' + fmt$(r.precio) + ' · cuesta ' + fmt$(r.costo) + (r.cvPct != null ? ' (' + fmtPct(r.cvPct) + ')' : '') + '</div>' +
+    '<div class="tabla-wrap" style="margin-top:12px"><table><tr><th>Insumo</th><th class="num">Cant.</th><th class="num">Costo</th></tr>' +
+    (rr.ing || []).map(x => {
+      const i = ins[x.insumoId] || { nombre: x.insumoId, unidad: '?' };
+      const c = costoUnidadInsumo(i) * (Number(x.c) || 0);
+      return '<tr><td>' + esc(i.nombre) + '</td><td class="num">' + (Number(x.c) || 0) + ' ' + esc(i.unidad || '') + '</td>' +
+        '<td class="num">' + (Number(i.precio) > 0 ? fmt$(c) : '<span style="color:var(--alerta)">falta</span>') + '</td></tr>';
     }).join('') +
-    (a.completo ? '<tr class="total"><td>COSTO TOTAL</td><td></td><td class="num">' + fmt$(a.costo) + '</td></tr>' +
-      '<tr class="total"><td>MARGEN</td><td></td><td class="num" style="color:' + (a.margen > 0 ? 'var(--ok)' : 'var(--alerta)') + '">' + fmt$(a.margen) + '</td></tr>' : '') +
+    '<tr class="total"><td>COSTO</td><td></td><td class="num">' + fmt$(r.costo) + '</td></tr>' +
+    '<tr class="total"><td>MARGEN</td><td></td><td class="num" style="color:' + (r.margen > 0 ? 'var(--ok)' : 'var(--alerta)') + '">' + fmt$(r.margen) + '</td></tr>' +
     '</table></div>' +
-    '<label>¿Cuántos vendiste este mes? (para el promedio ponderado)</label>' +
-    '<input id="mix-' + r.id + '" type="number" value="' + ((db.mixVentas || {})[r.id] || '') + '" placeholder="0">' +
-    '<div class="fila der" style="margin-top:14px"><button class="btn s chico" onclick="cerrarModal()">Cerrar</button>' +
-    '<button class="btn p chico" onclick="guardarMix(\'' + r.id + '\')">Guardar</button></div>');
-}
-function guardarMix(id) {
-  if (!db.mixVentas) db.mixVentas = {};
-  const v = Number(($('mix-' + id) || {}).value || 0);
-  if (v > 0) db.mixVentas[id] = v; else delete db.mixVentas[id];
-  guardarDB(); cerrarModal(); renderEscandallo(); toast('Guardado');
-}
-function aplicarCV() {
-  const p = cvPonderado(); if (!p) return;
-  sucursales().forEach(s => guardarMes(mesNum, s.id, { cvPct: Math.round(p.pct * 10) / 10 }));
-  anotar('numeros', '🍔 Costo de ventas del escandallo aplicado a Números', fmtPct(p.pct));
-  guardarDB(); toast('Aplicado a ambas sucursales'); ir('scr-numeros');
+    (r.completo && r.cvPct > meta ? '<div class="card" style="background:var(--amarillo-suave);border-color:var(--amarillo);margin:12px 0 0">' +
+      '<div class="peq">Para bajar a <b>' + meta + '%</b> de costo: vender en <b>' + fmt$(r.precioMeta(meta)) + '</b> (subir ' + fmt$(r.precioMeta(meta) - r.precio) + ') ' +
+      'o bajar el costo a <b>' + fmt$(r.precio * meta / 100) + '</b>.</div></div>' : '') +
+    '<div class="fila der" style="margin-top:14px"><button class="btn s chico" onclick="cerrarModal()">Cerrar</button></div>');
 }
 
 /* ============================================================
